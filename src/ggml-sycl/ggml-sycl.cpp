@@ -1063,9 +1063,9 @@ static size_t ggml_backend_sycl_buffer_type_get_max_size(ggml_backend_buffer_typ
 
 static size_t ggml_backend_sycl_buffer_type_get_alloc_size(ggml_backend_buffer_type_t buft, const ggml_tensor * tensor) {
     // Reserve the additional scratch so it's visible to the graph allocator
-    size_t size = tensor->op == GGML_OP_FLASH_ATTN_EXT
-        ? ggml_sycl_flash_attn_ext_get_alloc_size(tensor)
-        : ggml_nbytes(tensor);
+    size_t size = tensor->op == GGML_OP_FLASH_ATTN_EXT ? ggml_sycl_flash_attn_ext_get_alloc_size(tensor)
+                : tensor->op == GGML_OP_SAGE_ATTN      ? ggml_sycl_sage_attn_get_alloc_size(tensor)
+                                                       : ggml_nbytes(tensor);
     int64_t ne0 = tensor->ne[0];
 
     if (ggml_is_quantized(tensor->type)) {
@@ -5870,6 +5870,9 @@ static bool ggml_sycl_compute_forward(ggml_backend_sycl_context & ctx, struct gg
         case GGML_OP_FLASH_ATTN_EXT:
             ggml_sycl_flash_attn_ext(ctx, dst);
             break;
+        case GGML_OP_SAGE_ATTN:
+            ggml_sycl_sage_attn(ctx, dst);
+            break;
         default:
             return false;
     }
@@ -6945,6 +6948,8 @@ static bool do_ggml_backend_sycl_device_supports_op(ggml_backend_dev_t dev, cons
             return op->src[0]->ne[0] <= SYCL_SOLVE_TRI_MAX_N && op->src[1]->ne[0] <= SYCL_SOLVE_TRI_MAX_K;
         case GGML_OP_FLASH_ATTN_EXT:
             return ggml_sycl_flash_attn_ext_supported(device, op);
+        case GGML_OP_SAGE_ATTN:
+            return ggml_sycl_sage_attn_supported(device, op);
         default:
             return false;
     }

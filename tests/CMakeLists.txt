@@ -183,6 +183,11 @@ if (GGML_SYCL)
     set(TEST_TARGET test-fattn-ab)
     add_executable(${TEST_TARGET} ${TEST_TARGET}.cpp)
     target_link_libraries(${TEST_TARGET} PRIVATE ggml Threads::Threads)
+
+    # test-sage-ab: SageAttention on SYCL vs CUDA (when present) vs an exact CPU reference
+    set(TEST_TARGET test-sage-ab)
+    add_executable(${TEST_TARGET} ${TEST_TARGET}.cpp)
+    target_link_libraries(${TEST_TARGET} PRIVATE ggml Threads::Threads)
 endif()
 
 

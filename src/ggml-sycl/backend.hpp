@@ -38,6 +38,7 @@
 #include "pad_reflect_1d.hpp"
 #include "quantize.hpp"
 #include "quants.hpp"
+#include "sage-attn.hpp"
 #include "roll.hpp"
 #include "rope.hpp"
 #include "set_rows.hpp"
