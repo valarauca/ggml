@@ -176,6 +176,15 @@ target_link_libraries(${TEST_TARGET} PRIVATE ggml Threads::Threads)
 add_test(NAME ${TEST_TARGET} COMMAND $<TARGET_FILE:${TEST_TARGET}>)
 set_property(TEST ${TEST_TARGET} PROPERTY ENVIRONMENT "LLVM_PROFILE_FILE=${TEST_TARGET}.profraw")
 
+#
+# test-fattn-ab: A/B of the SYCL flash-attention kernels against the CPU, needs a SYCL device
+
+if (GGML_SYCL)
+    set(TEST_TARGET test-fattn-ab)
+    add_executable(${TEST_TARGET} ${TEST_TARGET}.cpp)
+    target_link_libraries(${TEST_TARGET} PRIVATE ggml Threads::Threads)
+endif()
+
 
 if (NOT GGML_BACKEND_DL)
     #
