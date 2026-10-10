@@ -8,7 +8,6 @@
 
 #include "ggml.h"
 #include "ggml-backend.h"
-#include "ggml-cpu.h"
 
 #include <algorithm>
 #include <chrono>
@@ -171,6 +170,7 @@ int main(int argc, char ** argv) {
 
     set_env("GGML_SYCL_MKL_FA_DEBUG", "1");
     ggml_log_set(capture_dispatch_log, nullptr);
+    ggml_backend_load_all();
 
     ggml_backend_dev_t sycl_dev = ggml_backend_dev_by_name("SYCL0");
     if (!sycl_dev) {
@@ -178,8 +178,12 @@ int main(int argc, char ** argv) {
         return 1;
     }
     ggml_backend_t sycl = ggml_backend_dev_init(sycl_dev, nullptr);
-    ggml_backend_t cpu  = ggml_backend_cpu_init();
-    ggml_backend_cpu_set_n_threads(cpu, (int) std::max(1u, std::thread::hardware_concurrency()));
+    ggml_backend_t cpu  = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+    ggml_backend_reg_t cpu_reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(cpu));
+    auto set_n_threads = (ggml_backend_set_n_threads_t) ggml_backend_reg_get_proc_address(cpu_reg, "ggml_backend_set_n_threads");
+    if (set_n_threads) {
+        set_n_threads(cpu, (int) std::min(8u, std::max(1u, std::thread::hardware_concurrency())));
+    }
 
     const fa_shape shapes[] = {
         { "dit-4096x4096-h24",        128, 4096, 4096, 24, 24, false, true,  128 },
