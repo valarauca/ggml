@@ -2,6 +2,7 @@
 
 #include "ggml-cpu.h"
 #include "ggml-impl.h"
+#include "ggml-wanghash.h"
 #include "ggml-quants.h"
 #include "binary-ops.h"
 #include "simd-gemm.h"
@@ -6026,6 +6027,88 @@ void ggml_compute_forward_rope_apply(const ggml_compute_params * params, ggml_te
                 out[i1] = a*s + b*c;
             }
         }
+    }
+}
+
+// ggml_compute_forward_denoise
+
+void ggml_compute_forward_denoise(const ggml_compute_params * params, ggml_tensor * dst) {
+    const ggml_tensor * uncond     = dst->src[2];
+    const ggml_tensor * img_uncond = dst->src[3];
+    const ggml_tensor * mask       = dst->src[4];
+    const float * x  = (const float *) dst->src[0]->data;
+    const float * c  = (const float *) dst->src[1]->data;
+    const float * u  = uncond ? (const float *) uncond->data : nullptr;
+    const float * iu = img_uncond ? (const float *) img_uncond->data : nullptr;
+    const float * m  = mask ? (const float *) mask->data : nullptr;
+    const float * in = mask ? (const float *) dst->src[5]->data : nullptr;
+    const float * p  = (const float *) dst->src[6]->data;
+    const float c_skip  = p[0];
+    const float c_out   = p[1];
+    const float txt_cfg = p[2];
+    const float img_cfg = p[3];
+    float * out = (float *) dst->data;
+
+    const int64_t n       = ggml_nelements(dst);
+    const int64_t per_thr = (n + params->nth - 1)/params->nth;
+    const int64_t begin   = per_thr*params->ith;
+    const int64_t end     = std::min(begin + per_thr, n);
+    for (int64_t i = begin; i < end; ++i) {
+        float pred = c[i];
+        if (u && iu) {
+            pred = iu[i] + img_cfg*(u[i] - iu[i]) + txt_cfg*(c[i] - u[i]);
+        } else if (u) {
+            pred = u[i] + txt_cfg*(c[i] - u[i]);
+        } else if (iu) {
+            pred = iu[i] + txt_cfg*(c[i] - iu[i]);
+        }
+        float d = pred*c_out + x[i]*c_skip;
+        if (m) {
+            d = d*m[i] + in[i]*(1.0f - m[i]);
+        }
+        out[i] = d;
+    }
+}
+
+// ggml_compute_forward_sample_step
+
+void ggml_compute_forward_sample_step(const ggml_compute_params * params, ggml_tensor * dst) {
+    const float * x   = (const float *) dst->src[0]->data;
+    const float * den = (const float *) dst->src[1]->data;
+    const float * p   = (const float *) dst->src[2]->data;
+    const int32_t mode = ggml_get_op_params_i32(dst, 0);
+    const uint32_t seed = (uint32_t) ggml_get_op_params_i32(dst, 1);
+    const float sigma      = p[0];
+    const float sigma_next = p[1];
+    const float sigma_down = p[2];
+    const float sigma_up   = p[3];
+    const float alpha      = p[4];
+    const uint32_t key     = ggml_wang_key(seed, (uint32_t) p[5]);
+    float * out = (float *) dst->data;
+
+    const int64_t n       = ggml_nelements(dst);
+    const int64_t per_thr = (n + params->nth - 1)/params->nth;
+    const int64_t begin   = per_thr*params->ith;
+    const int64_t end     = std::min(begin + per_thr, n);
+    if (mode == GGML_SAMPLE_STEP_EULER) {
+        const float dt = sigma_next - sigma;
+        for (int64_t i = begin; i < end; ++i) {
+            const float d = (x[i] - den[i])/sigma;
+            out[i] = x[i] + d*dt;
+        }
+        return;
+    }
+    const float r = sigma_down/sigma;
+    for (int64_t i = begin; i < end; ++i) {
+        float v = r*x[i] + (1.0f - r)*den[i];
+        if (sigma_up > 0.0f) {
+            float u1;
+            float u2;
+            ggml_wang_uniform2(key, (uint32_t) i, &u1, &u2);
+            const float noise = sqrtf(-2.0f*logf(u1))*cosf(6.28318530717958647692f*u2);
+            v = v*alpha + noise*sigma_up;
+        }
+        out[i] = v;
     }
 }
 

@@ -2085,6 +2085,14 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_rope_apply(params, tensor);
             } break;
+        case GGML_OP_DENOISE:
+            {
+                ggml_compute_forward_denoise(params, tensor);
+            } break;
+        case GGML_OP_SAMPLE_STEP:
+            {
+                ggml_compute_forward_sample_step(params, tensor);
+            } break;
         case GGML_OP_ROPE:
             {
                 ggml_compute_forward_rope(params, tensor);
@@ -2557,6 +2565,8 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_ROPE:
         case GGML_OP_ROPE_BACK:
         case GGML_OP_ROPE_APPLY:
+        case GGML_OP_DENOISE:
+        case GGML_OP_SAMPLE_STEP:
         case GGML_OP_ADD_REL_POS:
             {
                 n_tasks = n_threads;

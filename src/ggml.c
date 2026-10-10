@@ -1118,9 +1118,11 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "SAGE_ATTN",
     "SOL_ATTN",
     "ROPE_APPLY",
+    "DENOISE",
+    "SAMPLE_STEP",
 };
 
-static_assert(GGML_OP_COUNT == 105, "GGML_OP_COUNT != 105");
+static_assert(GGML_OP_COUNT == 107, "GGML_OP_COUNT != 107");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1238,9 +1240,11 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "sage_attn(x,y,z)",
     "sol_attn(x,y,z)",
     "rope_apply(x,pe)",
+    "denoise(x,c,u)",
+    "sample_step(x,d)",
 };
 
-static_assert(GGML_OP_COUNT == 105, "GGML_OP_COUNT != 105");
+static_assert(GGML_OP_COUNT == 107, "GGML_OP_COUNT != 107");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -5696,6 +5700,58 @@ struct ggml_tensor* ggml_sol_attn(
     result->src[2]             = v;
     const float params[]       = {scale, tau};
     ggml_set_op_params(result, params, sizeof(params));
+    return result;
+}
+
+static bool ggml_is_sampler_operand(const struct ggml_tensor * t, const struct ggml_tensor * x) {
+    return t->type == GGML_TYPE_F32 && ggml_is_contiguous(t) && ggml_are_same_shape(t, x);
+}
+
+struct ggml_tensor * ggml_denoise(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * x,
+        struct ggml_tensor  * cond,
+        struct ggml_tensor  * uncond,
+        struct ggml_tensor  * img_uncond,
+        struct ggml_tensor  * mask,
+        struct ggml_tensor  * init,
+        struct ggml_tensor  * p) {
+    GGML_ASSERT(ggml_is_sampler_operand(x, x) && ggml_is_sampler_operand(cond, x));
+    GGML_ASSERT(uncond == NULL || ggml_is_sampler_operand(uncond, x));
+    GGML_ASSERT(img_uncond == NULL || ggml_is_sampler_operand(img_uncond, x));
+    GGML_ASSERT((mask == NULL) == (init == NULL));
+    GGML_ASSERT(mask == NULL || (ggml_is_sampler_operand(mask, x) && ggml_is_sampler_operand(init, x)));
+    GGML_ASSERT(p->type == GGML_TYPE_F32 && ggml_is_contiguous(p) && ggml_nelements(p) == 4);
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, GGML_MAX_DIMS, x->ne);
+    result->op     = GGML_OP_DENOISE;
+    result->src[0] = x;
+    result->src[1] = cond;
+    result->src[2] = uncond;
+    result->src[3] = img_uncond;
+    result->src[4] = mask;
+    result->src[5] = init;
+    result->src[6] = p;
+    return result;
+}
+
+struct ggml_tensor * ggml_sample_step(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * x,
+        struct ggml_tensor  * denoised,
+        struct ggml_tensor  * p,
+        enum ggml_sample_step_mode mode,
+        uint32_t              seed) {
+    GGML_ASSERT(ggml_is_sampler_operand(x, x) && ggml_is_sampler_operand(denoised, x));
+    GGML_ASSERT(p->type == GGML_TYPE_F32 && ggml_is_contiguous(p) && ggml_nelements(p) == 6);
+    GGML_ASSERT(mode == GGML_SAMPLE_STEP_EULER || mode == GGML_SAMPLE_STEP_EULER_ANCESTRAL);
+    GGML_ASSERT(ggml_nelements(x) <= INT32_MAX);
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, GGML_MAX_DIMS, x->ne);
+    result->op     = GGML_OP_SAMPLE_STEP;
+    result->src[0] = x;
+    result->src[1] = denoised;
+    result->src[2] = p;
+    ggml_set_op_params_i32(result, 0, mode);
+    ggml_set_op_params_i32(result, 1, (int32_t) seed);
     return result;
 }
 

@@ -8094,6 +8094,88 @@ struct test_opt_step_sgd : public test_case {
     }
 };
 
+// GGML_OP_DENOISE
+struct test_denoise : public test_case {
+    const std::array<int64_t, 4> ne;
+    const bool uncond;
+    const bool img_uncond;
+    const bool mask;
+
+    std::string vars() override { return VARS_TO_STR4(ne, uncond, img_uncond, mask); }
+
+    test_denoise(std::array<int64_t, 4> ne = { 64, 64, 16, 1 }, bool uncond = true, bool img_uncond = false,
+            bool mask = false)
+        : ne(ne), uncond(uncond), img_uncond(img_uncond), mask(mask) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        auto operand = [&](const char * name) {
+            ggml_tensor * t = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne.data());
+            ggml_set_name(t, name);
+            return t;
+        };
+        ggml_tensor * x    = operand("x");
+        ggml_tensor * cond = operand("cond");
+        ggml_tensor * u    = uncond ? operand("uncond") : nullptr;
+        ggml_tensor * iu   = img_uncond ? operand("img_uncond") : nullptr;
+        ggml_tensor * m    = mask ? operand("mask") : nullptr;
+        ggml_tensor * init = mask ? operand("init") : nullptr;
+        ggml_tensor * p    = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 4);
+        ggml_set_name(p, "p");
+        ggml_tensor * out = ggml_denoise(ctx, x, cond, u, iu, m, init, p);
+        ggml_set_name(out, "out");
+        return out;
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
+            if (strcmp(t->name, "p") == 0) {
+                const float p[4] = { 0.8f, -0.6f, 7.0f, 1.5f };
+                ggml_backend_tensor_set(t, p, 0, sizeof(p));
+            } else if (strcmp(t->name, "mask") == 0) {
+                init_tensor_uniform(t, 0.0f, 1.0f);
+            } else {
+                init_tensor_uniform(t, -1.0f, 1.0f);
+            }
+        }
+    }
+};
+
+// GGML_OP_SAMPLE_STEP
+struct test_sample_step : public test_case {
+    const std::array<int64_t, 4> ne;
+    const ggml_sample_step_mode mode;
+    const float alpha;
+
+    std::string vars() override { return VARS_TO_STR3(ne, mode, alpha); }
+
+    test_sample_step(std::array<int64_t, 4> ne = { 64, 64, 16, 1 },
+            ggml_sample_step_mode mode = GGML_SAMPLE_STEP_EULER, float alpha = 1.0f)
+        : ne(ne), mode(mode), alpha(alpha) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * x = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne.data());
+        ggml_set_name(x, "x");
+        ggml_tensor * den = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne.data());
+        ggml_set_name(den, "denoised");
+        ggml_tensor * p = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 6);
+        ggml_set_name(p, "p");
+        ggml_tensor * out = ggml_sample_step(ctx, x, den, p, mode, 1234567u);
+        ggml_set_name(out, "out");
+        return out;
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
+            if (strcmp(t->name, "p") == 0) {
+                const float p[6] = { 0.9f, 0.7f, 0.6f, 0.4f, alpha, 3.0f };
+                ggml_backend_tensor_set(t, p, 0, sizeof(p));
+            } else {
+                init_tensor_uniform(t, -1.0f, 1.0f);
+            }
+        }
+    }
+};
+
 // GGML_OP_CUMSUM
 struct test_cumsum : public test_case {
     const ggml_type              type;
@@ -10977,6 +11059,20 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
 
     test_cases.emplace_back(new test_opt_step_adamw(GGML_TYPE_F32, {10, 5, 4, 3}));
     test_cases.emplace_back(new test_opt_step_sgd(GGML_TYPE_F32, {10, 5, 4, 3}));
+
+    for (bool uncond : { false, true }) {
+        for (bool img_uncond : { false, true }) {
+            test_cases.emplace_back(new test_denoise({ 64, 64, 16, 1 }, uncond, img_uncond, false));
+        }
+    }
+    test_cases.emplace_back(new test_denoise({ 64, 64, 16, 1 }, true, false, true));
+    test_cases.emplace_back(new test_denoise({ 37, 5, 3, 1 }, true, true, true));
+    for (ggml_sample_step_mode mode : { GGML_SAMPLE_STEP_EULER, GGML_SAMPLE_STEP_EULER_ANCESTRAL }) {
+        test_cases.emplace_back(new test_sample_step({ 64, 64, 16, 1 }, mode));
+        test_cases.emplace_back(new test_sample_step({ 37, 5, 3, 1 }, mode));
+        test_cases.emplace_back(new test_sample_step({ 128, 128, 16, 1 }, mode));
+    }
+    test_cases.emplace_back(new test_sample_step({ 64, 64, 16, 1 }, GGML_SAMPLE_STEP_EULER_ANCESTRAL, 1.25f));
 
     for (ggml_type type : base_types) {
         for (bool with_gate : {false, true}) {

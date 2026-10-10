@@ -607,6 +607,8 @@ extern "C" {
         GGML_OP_SAGE_ATTN,
         GGML_OP_SOL_ATTN,
         GGML_OP_ROPE_APPLY,
+        GGML_OP_DENOISE,
+        GGML_OP_SAMPLE_STEP,
 
         GGML_OP_COUNT,
     };
@@ -2550,6 +2552,44 @@ extern "C" {
         struct ggml_tensor* v,
         float scale,
         float tau);
+
+    // Diffusion denoised estimate with classifier-free guidance.
+    // x, cond and the optional uncond, img_uncond, mask, init: contiguous F32 of the same shape.
+    // p: contiguous F32 {c_skip, c_out, txt_cfg, img_cfg}.
+    //   pred = cond                                                          (no uncond, no img_uncond)
+    //   pred = uncond + txt_cfg*(cond - uncond)                              (no img_uncond)
+    //   pred = img_uncond + txt_cfg*(cond - img_uncond)                      (no uncond)
+    //   pred = img_uncond + img_cfg*(uncond - img_uncond) + txt_cfg*(cond - uncond)
+    //   out  = pred*c_out + x*c_skip, then out*mask + init*(1 - mask) when mask and init are set
+    GGML_API struct ggml_tensor * ggml_denoise(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * x,
+            struct ggml_tensor  * cond,
+            struct ggml_tensor  * uncond,
+            struct ggml_tensor  * img_uncond,
+            struct ggml_tensor  * mask,
+            struct ggml_tensor  * init,
+            struct ggml_tensor  * p);
+
+    enum ggml_sample_step_mode {
+        GGML_SAMPLE_STEP_EULER = 0,
+        GGML_SAMPLE_STEP_EULER_ANCESTRAL,
+    };
+
+    // One diffusion sampler step on contiguous F32 x and denoised of the same shape.
+    // p: contiguous F32 {sigma, sigma_next, sigma_down, sigma_up, alpha, step}.
+    //   EULER:           x + (x - denoised)/sigma*(sigma_next - sigma)
+    //   EULER_ANCESTRAL: r*x + (1 - r)*denoised with r = sigma_down/sigma, then, when sigma_up > 0,
+    //                    multiplied by alpha and offset by sigma_up*n
+    // n is a standard normal from a stateless WangHash of (seed, step, element index), so it does
+    // not depend on the backend or launch shape. Scalars live in p so graphs can be replayed.
+    GGML_API struct ggml_tensor * ggml_sample_step(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * x,
+            struct ggml_tensor  * denoised,
+            struct ggml_tensor  * p,
+            enum ggml_sample_step_mode mode,
+            uint32_t              seed);
 
     GGML_DEPRECATED(GGML_API void ggml_flash_attn_ext_set_prec(
             struct ggml_tensor * a,

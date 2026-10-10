@@ -5873,6 +5873,12 @@ static bool ggml_sycl_compute_forward(ggml_backend_sycl_context & ctx, struct gg
         case GGML_OP_SAGE_ATTN:
             ggml_sycl_sage_attn(ctx, dst);
             break;
+        case GGML_OP_DENOISE:
+            ggml_sycl_denoise(ctx, dst);
+            break;
+        case GGML_OP_SAMPLE_STEP:
+            ggml_sycl_sample_step(ctx, dst);
+            break;
         default:
             return false;
     }
@@ -6950,6 +6956,9 @@ static bool do_ggml_backend_sycl_device_supports_op(ggml_backend_dev_t dev, cons
             return ggml_sycl_flash_attn_ext_supported(device, op);
         case GGML_OP_SAGE_ATTN:
             return ggml_sycl_sage_attn_supported(device, op);
+        case GGML_OP_DENOISE:
+        case GGML_OP_SAMPLE_STEP:
+            return op->type == GGML_TYPE_F32;
         default:
             return false;
     }

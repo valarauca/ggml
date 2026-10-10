@@ -479,6 +479,9 @@ static bool ggml_backend_cpu_device_supports_op(ggml_backend_dev_t dev, const st
         case GGML_OP_ROPE_APPLY:
             return src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F32 &&
                    op->type == GGML_TYPE_F32 && ggml_is_contiguous(op);
+        case GGML_OP_DENOISE:
+        case GGML_OP_SAMPLE_STEP:
+            return op->type == GGML_TYPE_F32;
         case GGML_OP_QUANTIZE_I8_CONVROT: {
             const int group_size = ggml_get_op_params_i32(op, 0);
             return src0->type == GGML_TYPE_F32 && op->type == GGML_TYPE_I8 &&
