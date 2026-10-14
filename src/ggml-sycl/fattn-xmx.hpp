@@ -16,4 +16,12 @@ bool ggml_sycl_flash_attn_ext_xmx_needs_q_f16(int device, const ggml_tensor * ds
 // device's joint_matrix element layout does not match the one the kernel was written against.
 void ggml_sycl_flash_attn_ext_xmx(ggml_backend_sycl_context & ctx, ggml_tensor * dst);
 
+// True when the head_dim 256 kernel for 6 Q heads per KV head can run the op: the XMX gates plus
+// that shape.
+bool ggml_sycl_flash_attn_ext_xmx_g6_supported(int device, const ggml_tensor * dst);
+
+// Run flash attention through the head_dim 256 kernel for 6 Q heads per KV head. Falls back to
+// ggml_sycl_flash_attn_ext_xmx() when the mask is not 16-byte aligned.
+void ggml_sycl_flash_attn_ext_xmx_g6(ggml_backend_sycl_context & ctx, ggml_tensor * dst);
+
 #endif // GGML_SYCL_FATTN_XMX_HPP

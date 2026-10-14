@@ -1,4 +1,5 @@
 #include "fattn-xmx.hpp"
+#include "fattn-xmx-g6.hpp"
 #include "fattn.hpp"
 #include "fattn-tile.hpp"
 
@@ -1138,5 +1139,89 @@ void ggml_sycl_flash_attn_ext_xmx(ggml_backend_sycl_context & ctx, ggml_tensor *
             fattn_xmx_combine(p, DV, packed, stream);
         }
     }
+#endif
+}
+
+bool ggml_sycl_flash_attn_ext_xmx_g6_supported(int device, const ggml_tensor * dst) {
+#ifndef GGML_SYCL_FA_XMX
+    GGML_UNUSED(device);
+    GGML_UNUSED(dst);
+    return false;
+#else
+    const ggml_tensor * Q    = dst->src[0];
+    const ggml_tensor * K    = dst->src[1];
+    const ggml_tensor * V    = dst->src[2];
+    const ggml_tensor * mask = dst->src[3];
+    return K->ne[0] == 256 && V->ne[0] == 256 && K->ne[2] > 0 && Q->ne[2] == XMX_G6_R * K->ne[2] &&
+           (!mask || mask->nb[1] % 16 == 0) && ggml_sycl_flash_attn_ext_xmx_supported(device, dst);
+#endif
+}
+
+void ggml_sycl_flash_attn_ext_xmx_g6(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+#ifndef GGML_SYCL_FA_XMX
+    ggml_sycl_flash_attn_ext_tile(ctx, dst);
+#else
+    const ggml_tensor * Q    = dst->src[0];
+    const ggml_tensor * K    = dst->src[1];
+    const ggml_tensor * V    = dst->src[2];
+    const ggml_tensor * mask = dst->src[3];
+
+    dpct::queue_ptr stream = ctx.stream();
+    if (mask && (uintptr_t) mask->data % 16 != 0) {
+        ggml_sycl_flash_attn_ext_xmx(ctx, dst);
+        return;
+    }
+
+    const int64_t nq  = Q->ne[1];
+    const int64_t H   = Q->ne[2];
+    const int64_t Hkv = K->ne[2];
+    const int64_t mb  = Q->ne[3];
+
+    const ggml_sycl_fattn_extra                     extra  = ggml_sycl_fattn_get_extra(ctx.device, dst);
+    const bool                                      v_on_k = K->type != GGML_TYPE_F16 && fattn_xmx_v_is_k_view(K, V);
+    std::optional<ggml_sycl_pool_alloc<sycl::half>> K_pool;
+    std::optional<ggml_sycl_pool_alloc<sycl::half>> V_pool;
+    const sycl::half * Kh = fattn_xmx_stage(ctx, dst, K, (sycl::half *) extra.K_buffer_ptr, K_pool);
+    const sycl::half * Vh = v_on_k ? Kh : fattn_xmx_stage(ctx, dst, V, (sycl::half *) extra.V_buffer_ptr, V_pool);
+    const std::array<size_t, 3> ks = fattn_xmx_f16_strides(K);
+    const std::array<size_t, 3> vs = v_on_k ? ks : fattn_xmx_f16_strides(V);
+
+    fattn_xmx_g6_params p{};
+    p.K       = Kh;
+    p.V       = Vh;
+    p.mask    = mask ? (const sycl::half *) mask->data : nullptr;
+    p.dst     = (float *) dst->data;
+    p.k_s1    = ks[0] / sizeof(sycl::half);
+    p.k_s2    = ks[1] / sizeof(sycl::half);
+    p.k_s3    = K->ne[3] == 1 ? 0 : ks[2] / sizeof(sycl::half);
+    p.v_s1    = vs[0] / sizeof(sycl::half);
+    p.v_s2    = vs[1] / sizeof(sycl::half);
+    p.v_s3    = V->ne[3] == 1 ? 0 : vs[2] / sizeof(sycl::half);
+    p.mask_s1 = mask ? mask->nb[1] / sizeof(sycl::half) : 0;
+    p.nq      = (int) nq;
+    p.nkv     = (int) K->ne[1];
+    p.H       = (int) H;
+    p.Hkv     = (int) Hkv;
+    p.mb      = (int) mb;
+    memcpy(&p.scale, (const float *) dst->op_params + 0, sizeof(float));
+
+    std::optional<ggml_sycl_pool_alloc<sycl::half>> Qh_pool;
+    sycl::half * Qh = nq % 16 == 0 ? (sycl::half *) extra.Q_buffer_ptr : nullptr;
+    if (!Qh) {
+        Qh_pool.emplace(ctx.pool(), fattn_xmx_g6_q_elems(nq, H, mb));
+        Qh = Qh_pool->get();
+    }
+    p.tq = fattn_xmx_g6_tq(p.nkv);
+    fattn_xmx_g6_stage_q((const char *) Q->data, Qh, nq, H, Hkv, mb, Q->nb[1], Q->nb[2], Q->nb[3], p.tq, stream);
+    p.Q = Qh;
+
+    std::optional<ggml_sycl_pool_alloc<sycl::int2>> rows_pool;
+    if (mask) {
+        rows_pool.emplace(ctx.pool(), (size_t) nq);
+        fattn_xmx_g6_mask_rows(p.mask, rows_pool->get(), p.nq, p.nkv, p.mask_s1, stream);
+        p.rows = rows_pool->get();
+    }
+
+    fattn_xmx_g6_launch(stream, p);
 #endif
 }

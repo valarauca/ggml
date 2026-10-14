@@ -99,12 +99,13 @@ enum best_fattn_kernel {
     BEST_FATTN_KERNEL_NONE     =   0,
     BEST_FATTN_KERNEL_VEC      = 100,
     BEST_FATTN_KERNEL_XMX      = 120, // joint_matrix (DPAS) kernel, default for prefill, GGML_SYCL_FA_XMX=0 disables
+    BEST_FATTN_KERNEL_XMX6     = 121, // head_dim 256 with 6 Q heads per KV head, default for prefill, GGML_SYCL_FA_XMX=1 disables
     BEST_FATTN_KERNEL_ONEDNN   = 150, // oneDNN SDPA: native F16 (PR #25222)
     BEST_FATTN_KERNEL_TILE     = 200,
     BEST_FATTN_KERNEL_MKL      = 300,
 };
 
-// GGML_SYCL_FA_KERNEL=tile|onednn|xmx forces that kernel whenever it supports the op. It is read
+// GGML_SYCL_FA_KERNEL=tile|onednn|xmx|xmx6 forces that kernel whenever it supports the op. It is read
 // on every call so a single process can A/B the kernels on identical inputs.
 static best_fattn_kernel ggml_sycl_get_best_fattn_kernel(const int device, const ggml_tensor * dst) {
 #ifndef SYCL_FLASH_ATTN
@@ -137,6 +138,10 @@ static best_fattn_kernel ggml_sycl_get_best_fattn_kernel(const int device, const
     const bool   force_tile = force_any && strcmp(forced, "tile") == 0;
     if (force_any && strcmp(forced, "onednn") == 0 && ggml_sycl_flash_attn_ext_onednn_supported(device, dst)) {
         return BEST_FATTN_KERNEL_ONEDNN;
+    }
+    if (((force_any && strcmp(forced, "xmx6") == 0) || (!force_any && g_ggml_sycl_fa_xmx == 2 && Q->ne[1] >= 32)) &&
+        ggml_sycl_flash_attn_ext_xmx_g6_supported(device, dst)) {
+        return BEST_FATTN_KERNEL_XMX6;
     }
     if (((force_any && strcmp(forced, "xmx") == 0) || (!force_any && g_ggml_sycl_fa_xmx && (Q->ne[1] >= 32 || K->ne[0] == 576))) &&
         ggml_sycl_flash_attn_ext_xmx_supported(device, dst)) {
@@ -311,6 +316,7 @@ void ggml_sycl_flash_attn_ext(ggml_backend_sycl_context & ctx, ggml_tensor * dst
         if (k == BEST_FATTN_KERNEL_ONEDNN)  kname = "ONEDNN";
         if (k == BEST_FATTN_KERNEL_VEC)  kname = "VEC";
         if (k == BEST_FATTN_KERNEL_XMX)  kname = "XMX";
+        if (k == BEST_FATTN_KERNEL_XMX6) kname = "XMX6";
         int64_t delta = 0;
         if (Dk == 256) {
             delta = cur_nkv - last_nkv_d256;
@@ -348,6 +354,9 @@ void ggml_sycl_flash_attn_ext(ggml_backend_sycl_context & ctx, ggml_tensor * dst
             break;
         case BEST_FATTN_KERNEL_XMX:
             ggml_sycl_flash_attn_ext_xmx(ctx, dst);
+            break;
+        case BEST_FATTN_KERNEL_XMX6:
+            ggml_sycl_flash_attn_ext_xmx_g6(ctx, dst);
             break;
     }
 

@@ -205,6 +205,16 @@ if (GGML_SYCL_AOT_DEVICES)
 endif()
 if (_ggml_sycl_fa_xmx)
     target_compile_definitions(ggml-sycl PRIVATE GGML_SYCL_FA_XMX)
+    # fattn-xmx-g6.cpp issues DPAS through the SPIR-V subgroup matrix multiply-accumulate instruction,
+    # which the device link has to be allowed to emit.
+    get_target_property(_ggml_sycl_fa_type ggml-sycl TYPE)
+    if (_ggml_sycl_fa_type STREQUAL "STATIC_LIBRARY")
+        set(_ggml_sycl_fa_link_scope INTERFACE)
+    else()
+        set(_ggml_sycl_fa_link_scope PRIVATE)
+    endif()
+    target_link_options(ggml-sycl ${_ggml_sycl_fa_link_scope}
+        "SHELL:-Xspirv-translator -spirv-ext=+SPV_INTEL_subgroup_matrix_multiply_accumulate")
 else()
     message(STATUS "XMX flash attention disabled: an AOT target lacks SIMD16 DPAS")
 endif()

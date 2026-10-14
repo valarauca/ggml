@@ -214,10 +214,14 @@ int main(int argc, char ** argv) {
         { "d256-h24-causal-512x8704",  256,  512,  8704, 24,  4, true,  false, 256 },
         { "d256-h24-causal-512x16896", 256,  512, 16896, 24,  4, true,  false, 256 },
         { "d256-h24-causal-512x33280", 256,  512, 33280, 24,  4, true,  false, 256 },
+        { "d256-h24-causal-512x65536", 256,  512, 65536, 24,  4, true,  false, 256 },
+        { "d256-h24-causal-1024x1024", 256, 1024,  1024, 24,  4, true,  false, 256 },
+        { "d256-h24-causal-1024x8704", 256, 1024,  8704, 24,  4, true,  false, 256 },
+        { "d256-h24-causal-1024x33792", 256, 1024, 33792, 24,  4, true,  false, 256 },
         { "d256-h16-causal-512x4608",  256,  512,  4608, 16,  4, true,  false, 256 },
         { "d256-h16-causal-512x33280", 256,  512, 33280, 16,  4, true,  false, 256 },
     };
-    const char * kernels[] = { "tile", "onednn", "xmx" };
+    const char * kernels[] = { "tile", "onednn", "xmx", "xmx6" };
     const double nmse_max  = 5e-4;
     const int    iters     = 5;
 
