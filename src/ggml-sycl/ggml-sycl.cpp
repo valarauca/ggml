@@ -6116,11 +6116,32 @@ static int ggml_sycl_try_gdn_cache_fusion(const ggml_cgraph * cgraph, int node_i
     return skip;
 }
 
+// Drops the cached entry if any node in (checked, upto] writes into the tensor it was built from.
+template <typename C>
+static void ggml_sycl_cache_note_writes(C & qc, const ggml_cgraph * cgraph, int & checked, int upto) {
+    for (; checked < upto; ++checked) {
+        const ggml_tensor * t = cgraph->nodes[checked + 1];
+        if (qc.src == nullptr || ggml_sycl_is_view_or_noop(t) || t->data == nullptr) {
+            continue;
+        }
+        const char * lo = static_cast<const char *>(t->data);
+        const char * hi = lo + ggml_nbytes(t);
+        const char * c  = static_cast<const char *>(qc.src);
+        if (lo < c + qc.src_bytes && c < hi) {
+            qc.src = nullptr;
+        }
+    }
+}
+
 static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * sycl_ctx, ggml_cgraph * cgraph) {
     ggml_sycl_set_main_device(sycl_ctx->device);
 
+    sycl_ctx->mask_rows_cache.src = nullptr;
+    int mask_rows_checked = -1;
+
     for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
+        ggml_sycl_cache_note_writes(sycl_ctx->mask_rows_cache, cgraph, mask_rows_checked, i);
         if (ggml_sycl_is_view_or_noop(node)) {
             continue;
         }

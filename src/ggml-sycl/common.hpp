@@ -77,6 +77,7 @@ extern int g_ggml_sycl_dev2dev_memcpy;
 extern int g_ggml_sycl_fa_onednn;
 extern int g_ggml_sycl_fa_onednn_max_kv;
 extern int g_ggml_sycl_fa_xmx;
+extern int g_ggml_sycl_enable_graph;
 extern int g_ggml_sycl_enable_mkl_fa;
 extern int g_ggml_sycl_memtrace;
 extern int g_ggml_sycl_memtrace_step;
@@ -342,10 +343,31 @@ struct mmid_row_mapping {
 };
 
 namespace sycl_ex = sycl::ext::oneapi::experimental;
+
+// Per query row key bounds of the last attention mask (fattn_xmx_g6_mask_rows()), kept so the other attention
+// layers of the graph reuse them. Valid until a graph node writes into [src, src + src_bytes).
+struct ggml_sycl_mask_rows_cache {
+    queue_ptr    q         = nullptr;
+    sycl::int2 * buf       = nullptr;
+    size_t       cap       = 0;
+    const void * src       = nullptr;
+    size_t       src_bytes = 0;
+    int          nq        = 0;
+    int          nkv       = 0;
+    int64_t      s1        = 0;
+
+    ~ggml_sycl_mask_rows_cache() {
+        if (buf != nullptr) {
+            sycl::free(buf, *q);
+        }
+    }
+};
+
 struct ggml_backend_sycl_context {
     int device;
     std::string name;
     optimize_feature opt_feature;
+    ggml_sycl_mask_rows_cache mask_rows_cache;
 
     queue_ptr qptrs[GGML_SYCL_MAX_DEVICES][GGML_SYCL_MAX_STREAMS] = { { nullptr } };
 

@@ -71,8 +71,9 @@ int fattn_xmx_g6_tq(int nkv) {
 // against one half of 64 keys, and the two halves meet in SLM. P goes to SLM as 8-row A tiles, and
 // every sub-group then accumulates P V for 256 / TQ output columns. K and V come in through 2D block
 // loads (32 key rows of K at a time, V in VNNI form), and each sub-group prefetches its share of the
-// next block into L1.
-template <int TQ>
+// next block into L1. With QF the work-group first converts its 6 TQ rows of ggml's f32 Q into its block
+// of the f16 copy, otherwise fattn_xmx_g6_stage_q() wrote the copy.
+template <int TQ, bool QF>
 struct fattn_xmx_g6_kernel {
     static constexpr int R   = XMX_G6_R;
     static constexpr int NSG = TQ;
@@ -117,7 +118,22 @@ struct fattn_xmx_g6_kernel {
         const int        kv_zero = sycl::reduce_over_group(sg, rw.y(), sycl::minimum<int>());
         const bool       causal  = sycl::all_of_group(sg, rw.y() >= e_t);
 
-        const sycl::half * Qrow = p.Q + (((size_t) (b * p.Hkv + hk) * ntb + tb) * R * TQ + g * 16 + lane) * G6_D;
+        sycl::half * const Qblk = p.Q + ((size_t) (b * p.Hkv + hk) * ntb + tb) * R * TQ * G6_D;
+        const sycl::half * Qrow = Qblk + (g * 16 + lane) * G6_D;
+        if constexpr (QF) {
+            for (int e = it.get_local_linear_id(); e < R * TQ * G6_D / 4; e += TQ * G6_SG) {
+                const int    d  = e % (G6_D / 4) * 4;
+                const int    rr = e / (G6_D / 4);
+                const int    tr = t0 + rr % TQ;
+                sycl::float4 v(0.0f);
+                if (tr < p.nq) {
+                    v = *(const sycl::float4 *) (p.Qf + b * p.q_s3 + (int64_t) (hk * R + rr / TQ) * p.q_s2 +
+                                                 (int64_t) tr * p.q_s1 + d);
+                }
+                *(sycl::vec<sycl::half, 4> *) (Qblk + rr * G6_D + d) = v.convert<sycl::half>();
+            }
+            sycl::group_barrier(it.get_group());
+        }
         const intptr_t     Kb   = (intptr_t) (p.K + b * p.k_s3 + hk * p.k_s2);
         const intptr_t     Vb   = (intptr_t) (p.V + b * p.v_s3 + hk * p.v_s2);
         const int          kp   = (int) (p.k_s1 * 2) - 1;
@@ -318,14 +334,14 @@ struct fattn_xmx_g6_kernel {
     }
 };
 
-template <int TQ>
+template <int TQ, bool QF>
 static void fattn_xmx_g6_submit(dpct::queue_ptr stream, const fattn_xmx_g6_params & p) {
     constexpr int NQK    = 2 * XMX_G6_R * TQ / G6_SG;
     const size_t  groups = (size_t) (p.nq + TQ - 1) / TQ * p.Hkv * p.mb;
     stream->submit([&](sycl::handler & h) {
         sycl::local_accessor<unsigned short, 1> pl(sycl::range<1>(XMX_G6_R * G6_BC * TQ), h);
         sycl::local_accessor<float, 1>          red(sycl::range<1>(2 * NQK * 16 + XMX_G6_R * TQ), h);
-        h.parallel_for(sycl::nd_range<1>(groups * TQ * G6_SG, TQ * G6_SG), fattn_xmx_g6_kernel<TQ>{ p, pl, red });
+        h.parallel_for(sycl::nd_range<1>(groups * TQ * G6_SG, TQ * G6_SG), fattn_xmx_g6_kernel<TQ, QF>{ p, pl, red });
     });
 }
 
@@ -406,10 +422,18 @@ void fattn_xmx_g6_mask_rows(const sycl::half * mask, sycl::int2 * rows, int nq, 
 }
 
 void fattn_xmx_g6_launch(dpct::queue_ptr stream, const fattn_xmx_g6_params & p) {
-    if (p.tq == 16) {
-        fattn_xmx_g6_submit<16>(stream, p);
+    if (p.Qf) {
+        if (p.tq == 16) {
+            fattn_xmx_g6_submit<16, true>(stream, p);
+        } else {
+            fattn_xmx_g6_submit<8, true>(stream, p);
+        }
     } else {
-        fattn_xmx_g6_submit<8>(stream, p);
+        if (p.tq == 16) {
+            fattn_xmx_g6_submit<16, false>(stream, p);
+        } else {
+            fattn_xmx_g6_submit<8, false>(stream, p);
+        }
     }
 }
 

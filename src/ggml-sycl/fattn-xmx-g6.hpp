@@ -6,11 +6,15 @@
 // Q heads per KV head the g6 kernel is written for.
 static constexpr int XMX_G6_R = 6;
 
-// Inputs of the g6 prefill kernel. Q is the f16 copy fattn_xmx_g6_stage_q() writes, K and V are f16
-// with the token, head and batch strides in elements, rows is fattn_xmx_g6_mask_rows() per query row
-// (null without a mask), and dst is the contiguous [DV, H, nq, mb] output.
+// Inputs of the g6 prefill kernel. Q is the f16 copy in the fattn_xmx_g6_stage_q() layout. With Qf
+// (ggml's f32 Q, the token, head and batch strides in elements, 16-byte aligned) the kernel writes the
+// copy itself, otherwise fattn_xmx_g6_stage_q() wrote it. K and V are f16 with the token, head and
+// batch strides in elements, rows is fattn_xmx_g6_mask_rows() per query row (null without a mask), and
+// dst is the contiguous [DV, H, nq, mb] output.
 struct fattn_xmx_g6_params {
-    const sycl::half * Q;
+    sycl::half *       Q;
+    const float *      Qf;
+    int64_t            q_s1, q_s2, q_s3;
     const sycl::half * K;
     const sycl::half * V;
     const sycl::half * mask;

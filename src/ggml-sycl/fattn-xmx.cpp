@@ -1205,18 +1205,46 @@ void ggml_sycl_flash_attn_ext_xmx_g6(ggml_backend_sycl_context & ctx, ggml_tenso
     p.mb      = (int) mb;
     memcpy(&p.scale, (const float *) dst->op_params + 0, sizeof(float));
 
+    static const bool stage_q = getenv("GGML_SYCL_FA_G6_STAGE_Q") && atoi(getenv("GGML_SYCL_FA_G6_STAGE_Q")) != 0;
     std::optional<ggml_sycl_pool_alloc<sycl::half>> Qh_pool;
+    p.tq = fattn_xmx_g6_tq(p.nkv);
     sycl::half * Qh = nq % 16 == 0 ? (sycl::half *) extra.Q_buffer_ptr : nullptr;
     if (!Qh) {
         Qh_pool.emplace(ctx.pool(), fattn_xmx_g6_q_elems(nq, H, mb));
         Qh = Qh_pool->get();
     }
-    p.tq = fattn_xmx_g6_tq(p.nkv);
-    fattn_xmx_g6_stage_q((const char *) Q->data, Qh, nq, H, Hkv, mb, Q->nb[1], Q->nb[2], Q->nb[3], p.tq, stream);
     p.Q = Qh;
+    if (!stage_q && (uintptr_t) Q->data % 16 == 0 && Q->nb[1] % 16 == 0 && Q->nb[2] % 16 == 0 && Q->nb[3] % 16 == 0) {
+        p.Qf   = (const float *) Q->data;
+        p.q_s1 = Q->nb[1] / sizeof(float);
+        p.q_s2 = Q->nb[2] / sizeof(float);
+        p.q_s3 = Q->nb[3] / sizeof(float);
+    } else {
+        fattn_xmx_g6_stage_q((const char *) Q->data, Qh, nq, H, Hkv, mb, Q->nb[1], Q->nb[2], Q->nb[3], p.tq, stream);
+    }
 
     std::optional<ggml_sycl_pool_alloc<sycl::int2>> rows_pool;
-    if (mask) {
+    ggml_sycl_mask_rows_cache &                     mc = ctx.mask_rows_cache;
+    if (mask && !g_ggml_sycl_enable_graph) {
+        if (mc.src != mask->data || mc.nq != p.nq || mc.nkv != p.nkv || mc.s1 != p.mask_s1) {
+            if ((size_t) nq > mc.cap) {
+                stream->wait();
+                if (mc.buf != nullptr) {
+                    sycl::free(mc.buf, *mc.q);
+                }
+                mc.buf = sycl::malloc_device<sycl::int2>(nq, *stream);
+                mc.cap = nq;
+                mc.q   = stream;
+            }
+            fattn_xmx_g6_mask_rows(p.mask, mc.buf, p.nq, p.nkv, p.mask_s1, stream);
+            mc.src       = mask->data;
+            mc.src_bytes = ggml_nbytes(mask);
+            mc.nq        = p.nq;
+            mc.nkv       = p.nkv;
+            mc.s1        = p.mask_s1;
+        }
+        p.rows = mc.buf;
+    } else if (mask) {
         rows_pool.emplace(ctx.pool(), (size_t) nq);
         fattn_xmx_g6_mask_rows(p.mask, rows_pool->get(), p.nq, p.nkv, p.mask_s1, stream);
         p.rows = rows_pool->get();
