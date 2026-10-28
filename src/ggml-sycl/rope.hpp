@@ -23,4 +23,6 @@ void ggml_sycl_rope_back(ggml_backend_sycl_context & ctx, ggml_tensor * dst);
 
 void ggml_sycl_rope_fused(ggml_backend_sycl_context & ctx, ggml_tensor * dst, ggml_tensor * set_rows);
 
+void ggml_sycl_rope_apply(ggml_backend_sycl_context & ctx, ggml_tensor * dst);
+
 #endif // GGML_SYCL_ROPE_HPP

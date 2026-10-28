@@ -5793,6 +5793,9 @@ static bool ggml_sycl_compute_forward(ggml_backend_sycl_context & ctx, struct gg
         case GGML_OP_ROPE_BACK:
             ggml_sycl_rope_back(ctx, dst);
             break;
+        case GGML_OP_ROPE_APPLY:
+            ggml_sycl_rope_apply(ctx, dst);
+            break;
         case GGML_OP_IM2COL:
             ggml_sycl_im2col(ctx, dst);
             break;
@@ -6973,6 +6976,9 @@ static bool do_ggml_backend_sycl_device_supports_op(ggml_backend_dev_t dev, cons
             return ggml_sycl_flash_attn_ext_supported(device, op);
         case GGML_OP_SAGE_ATTN:
             return ggml_sycl_sage_attn_supported(device, op);
+        case GGML_OP_ROPE_APPLY:
+            return op->src[0]->type == GGML_TYPE_F32 && op->src[1]->type == GGML_TYPE_F32 &&
+                   op->type == GGML_TYPE_F32 && ggml_is_contiguous(op);
         case GGML_OP_DENOISE:
         case GGML_OP_SAMPLE_STEP:
             return op->type == GGML_TYPE_F32;

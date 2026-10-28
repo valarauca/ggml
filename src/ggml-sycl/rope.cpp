@@ -649,3 +649,80 @@ void ggml_sycl_rope_fused(ggml_backend_sycl_context &ctx, ggml_tensor *rope,
     scope_op_debug_print scope_dbg_print(__func__, rope, /*num_src=*/3);
     ggml_sycl_op_rope_impl<true>(ctx, rope, set_rows);
 }
+
+struct rope_apply_strides {
+    int64_t x[4];
+    int64_t pe[4];
+};
+
+// Products and sums stay unfused so the result rounds like the unfused mul/add graph.
+template <bool interleaved>
+static void rope_apply_f32(const float * __restrict__ x, const float * __restrict__ pe, float * __restrict__ dst,
+                           const int64_t half_dim, const int64_t heads, const int64_t tokens, const int64_t pairs,
+                           const rope_apply_strides strides, const sycl::nd_item<1> & item) {
+#pragma clang fp contract(off)
+    const int64_t step = (int64_t) item.get_global_range(0);
+    for (int64_t index = (int64_t) item.get_global_id(0); index < pairs; index += step) {
+        const int64_t j      = index % half_dim;
+        const int64_t row    = index / half_dim;
+        const int64_t token  = row % tokens;
+        const int64_t head   = (row / tokens) % heads;
+        const int64_t batch  = row / (tokens * heads);
+        const int64_t i0     = interleaved ? 2 * j : j;
+        const int64_t i1     = interleaved ? 2 * j + 1 : j + half_dim;
+        const float * x_row  = x + head * strides.x[1] + token * strides.x[2] + batch * strides.x[3];
+        const float * matrix = pe + j * strides.pe[2] + token * strides.pe[3];
+        const float   a      = x_row[i0 * strides.x[0]];
+        const float   b      = x_row[i1 * strides.x[0]];
+        const float   c      = matrix[0];
+        const float   s      = matrix[strides.pe[1]];
+        float *       out    = dst + row * half_dim * 2;
+        if (interleaved) {
+            out[i0] = a * c + b * matrix[strides.pe[0]];
+            out[i1] = a * s + b * matrix[strides.pe[0] + strides.pe[1]];
+        } else {
+            out[i0] = a * c - b * s;
+            out[i1] = a * s + b * c;
+        }
+    }
+}
+
+void ggml_sycl_rope_apply(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+    scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/2);
+
+    const ggml_tensor * x  = dst->src[0];
+    const ggml_tensor * pe = dst->src[1];
+    GGML_ASSERT(x->type == GGML_TYPE_F32 && pe->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(ggml_is_contiguous(dst));
+
+    rope_apply_strides strides;
+    for (int i = 0; i < 4; ++i) {
+        strides.x[i]  = x->nb[i] / sizeof(float);
+        strides.pe[i] = pe->nb[i] / sizeof(float);
+    }
+    const float * x_d      = (const float *) x->data;
+    const float * pe_d     = (const float *) pe->data;
+    float *       dst_d    = (float *) dst->data;
+    const int64_t half_dim = x->ne[0] / 2;
+    const int64_t heads    = x->ne[1];
+    const int64_t tokens   = x->ne[2];
+    const int64_t pairs    = ggml_nelements(x) / 2;
+    if (pairs == 0) {
+        return;
+    }
+
+    dpct::queue_ptr stream = ctx.stream();
+    SYCL_CHECK(ggml_sycl_set_device(ctx.device));
+    const int64_t num_blocks = std::min<int64_t>((pairs + SYCL_ROPE_BLOCK_SIZE - 1) / SYCL_ROPE_BLOCK_SIZE,
+                                                 INT_MAX / SYCL_ROPE_BLOCK_SIZE);
+    const sycl::nd_range<1> range(num_blocks * SYCL_ROPE_BLOCK_SIZE, SYCL_ROPE_BLOCK_SIZE);
+    if (ggml_get_op_params_i32(dst, 0)) {
+        stream->parallel_for(range, [=](sycl::nd_item<1> item) {
+            rope_apply_f32<true>(x_d, pe_d, dst_d, half_dim, heads, tokens, pairs, strides, item);
+        });
+    } else {
+        stream->parallel_for(range, [=](sycl::nd_item<1> item) {
+            rope_apply_f32<false>(x_d, pe_d, dst_d, half_dim, heads, tokens, pairs, strides, item);
+        });
+    }
+}
