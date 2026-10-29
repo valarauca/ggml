@@ -57,22 +57,27 @@ static void norm_f32(const float* x, float* dst, const int ncols,
     }
 }
 
-static void group_norm_f32(const float* x, float* dst, const int group_size, const int ne_elements, const float eps,
-    const sycl::nd_item<3>& item_ct1, float* s_sum, int block_size) {
-    int start = item_ct1.get_group(2) * group_size;
-    int end = start + group_size;
+// One work-group per (group, ne3 slice). The last group of a slice may hold
+// fewer channels, so mean and variance divide by its actual element count.
+static void group_norm_f32(const float* x, float* dst, const int num_groups, const int64_t group_size,
+    const int64_t batch_size, const float eps, const sycl::nd_item<3>& item_ct1, float* s_sum, int block_size) {
+    const int64_t group = item_ct1.get_group(2);
+    const int64_t batch_start = (group / num_groups) * batch_size;
+    int64_t start = batch_start + (group % num_groups) * group_size;
+    int64_t end = start + group_size;
     const int nthreads = item_ct1.get_local_range(2);
     const int nwarps = nthreads / WARP_SIZE;
-    start += item_ct1.get_local_id(2);
     size_t nreduce = nwarps / WARP_SIZE;
 
-    if (end >= ne_elements) {
-        end = ne_elements;
+    if (end >= batch_start + batch_size) {
+        end = batch_start + batch_size;
     }
+    const float count = (float) (end - start);
+    start += item_ct1.get_local_id(2);
 
     float tmp = 0.0f; // partial sum for thread in warp
 
-    for (int j = start; j < end; j += block_size) {
+    for (int64_t j = start; j < end; j += block_size) {
         tmp += x[j];
     }
 
@@ -102,10 +107,10 @@ static void group_norm_f32(const float* x, float* dst, const int group_size, con
         tmp = warp_reduce_sum(tmp, item_ct1);
     }
 
-    float mean = tmp / group_size;
+    float mean = tmp / count;
     tmp = 0.0f;
 
-    for (int j = start; j < end; j += block_size) {
+    for (int64_t j = start; j < end; j += block_size) {
         float xi = x[j] - mean;
         dst[j] = xi;
         tmp += xi * xi;
@@ -137,9 +142,9 @@ static void group_norm_f32(const float* x, float* dst, const int group_size, con
         tmp = warp_reduce_sum(tmp, item_ct1);
     }
 
-    float variance = tmp / group_size;
+    float variance = tmp / count;
     float scale = sycl::rsqrt(variance + eps);
-    for (int j = start; j < end; j += block_size) {
+    for (int64_t j = start; j < end; j += block_size) {
         dst[j] *= scale;
     }
 }
@@ -307,19 +312,20 @@ static void norm_f32_sycl(const float * x, float * dst, const int ncols, const i
 }
 
 static void group_norm_f32_sycl(const float* x, float* dst,
-    const int num_groups, const float eps, const int group_size,
-    const int ne_elements, queue_ptr stream, int device) {
+    const int num_groups, const int64_t num_batches, const float eps, const int64_t group_size,
+    const int64_t batch_size, queue_ptr stream, int device) {
+    const size_t num_work_groups = (size_t) num_groups * num_batches;
     if (group_size < 1024) {
         const sycl::range<3> block_dims(1, 1, WARP_SIZE);
         stream->submit([&](sycl::handler& cgh) {
             const float eps_ct4 = eps;
             cgh.parallel_for(
-                sycl::nd_range<3>(sycl::range<3>(1, 1, num_groups) * block_dims,
+                sycl::nd_range<3>(sycl::range<3>(1, 1, num_work_groups) * block_dims,
                     block_dims),
                 [=](sycl::nd_item<3> item_ct1)
                 [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
                     group_norm_f32(
-                        x, dst, group_size, ne_elements, eps_ct4, item_ct1,
+                        x, dst, num_groups, group_size, batch_size, eps_ct4, item_ct1,
                         nullptr, WARP_SIZE);
                 });
             });
@@ -341,11 +347,11 @@ static void group_norm_f32_sycl(const float* x, float* dst,
             const float eps_ct4 = eps;
 
             cgh.parallel_for(
-                sycl::nd_range<3>(sycl::range<3>(1, 1, num_groups) * block_dims,
+                sycl::nd_range<3>(sycl::range<3>(1, 1, num_work_groups) * block_dims,
                     block_dims),
                 [=](sycl::nd_item<3> item_ct1)
                 [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
-                    group_norm_f32(x, dst, group_size, ne_elements,
+                    group_norm_f32(x, dst, num_groups, group_size, batch_size,
                         eps_ct4, item_ct1,
                         get_pointer(s_sum_acc_ct1), work_group_size);
                 });
@@ -697,8 +703,11 @@ void ggml_sycl_op_group_norm(ggml_backend_sycl_context& ctx, ggml_tensor* dst) {
     float eps;
     memcpy(&eps, dst->op_params + 1, sizeof(float));
 
-    int group_size = dst->src[0]->ne[0] * dst->src[0]->ne[1] * ((dst->src[0]->ne[2] + num_groups - 1) / num_groups);
-    group_norm_f32_sycl(src0_dd, dst_dd, num_groups, eps, group_size, dst->src[0]->ne[0] * dst->src[0]->ne[1] * dst->src[0]->ne[2], main_stream, ctx.device);
+    const ggml_tensor * src0 = dst->src[0];
+    GGML_ASSERT(ggml_is_contiguous(src0) && ggml_is_contiguous(dst));
+    const int64_t group_size = src0->ne[0] * src0->ne[1] * ((src0->ne[2] + num_groups - 1) / num_groups);
+    const int64_t batch_size = src0->ne[0] * src0->ne[1] * src0->ne[2];
+    group_norm_f32_sycl(src0_dd, dst_dd, num_groups, src0->ne[3], eps, group_size, batch_size, main_stream, ctx.device);
 }
 
 void ggml_sycl_op_rms_norm(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
